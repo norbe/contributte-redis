@@ -2,6 +2,7 @@
 
 namespace Contributte\Redis\DI;
 
+use Contributte\Redis\Caching\ExclusiveLock;
 use Contributte\Redis\Caching\RedisJournal;
 use Contributte\Redis\Caching\RedisStorage;
 use Contributte\Redis\Exception\Logic\InvalidStateException;
@@ -112,10 +113,18 @@ final class RedisExtension extends CompilerExtension
 				])
 				->setAutowired(false);
 
+			$builder->addDefinition($this->prefix('connection.' . $name . '.lock'))
+				->setFactory(ExclusiveLock::class)
+				->setArguments([
+					'client' => $builder->getDefinition($this->prefix('connection.' . $name . '.client')),
+				])
+				->setAutowired(false);
+
 			$builder->addDefinition($this->prefix('connection.' . $name . '.storage'))
 				->setFactory($connection->storageClass)
 				->setArguments([
 					'client' => $builder->getDefinition($this->prefix('connection.' . $name . '.client')),
+					'lock' => $builder->getDefinition($this->prefix('connection.' . $name . '.lock')),
 					'journal' => $builder->getDefinition($this->prefix('connection.' . $name . '.journal')),
 					'serializer' => $config->serializer,
 				])
