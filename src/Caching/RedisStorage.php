@@ -4,6 +4,7 @@ namespace Contributte\Redis\Caching;
 
 use Contributte\Redis\Serializer\DefaultSerializer;
 use Contributte\Redis\Serializer\Serializer;
+use Nette\Caching\BulkReader;
 use Nette\Caching\Cache;
 use Nette\Caching\Storage;
 use Nette\Caching\Storages\Journal;
@@ -16,7 +17,7 @@ use Tracy\Debugger;
 /**
  * @see based on original https://github.com/Kdyby/Redis
  */
-final class RedisStorage implements Storage
+final class RedisStorage implements Storage, BulkReader
 {
 
 	public const NS_PREFIX = 'Contributte.Storage';
@@ -91,13 +92,19 @@ final class RedisStorage implements Storage
 		$this->unlock($key);
 	}
 
+	#[Deprecated('Please use bulkRead instead')]
+	public function multiRead(array $keys): array
+	{
+		return $this->bulkRead($keys);
+	}
+
 	/**
 	 * Read multiple entries from cache (using mget)
 	 *
 	 * @param mixed[] $keys
 	 * @return mixed[]
 	 */
-	public function multiRead(array $keys): array
+	public function bulkRead(array $keys): array
 	{
 		$values = [];
 		foreach ($this->doMultiRead($keys) as $key => $stored) {
