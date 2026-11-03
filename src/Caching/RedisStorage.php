@@ -12,7 +12,6 @@ use Nette\InvalidStateException;
 use Predis\ClientInterface;
 use Predis\PredisException;
 use Predis\Response\Status;
-use Tracy\Debugger;
 
 /**
  * @see based on original https://github.com/Kdyby/Redis
@@ -119,7 +118,6 @@ final class RedisStorage implements Storage, BulkReader
 
 	public function lock(string $key): void
 	{
-		Debugger::log('lock:' . $key, 'redis_storage');
 		if(!$this->lock->acquireWithRetry($this->formatEntryKey($key) . ':lock')){
 			throw new \Contributte\Redis\Exception\Logic\InvalidStateException('Could not acquire lock for key ' . $key);
 		}
@@ -132,7 +130,6 @@ final class RedisStorage implements Storage, BulkReader
 	 */
 	public function write(string $key, mixed $data, array $dependencies): void
 	{
-		Debugger::log('write:' . $key, 'redis_storage');
 		$meta = [
 			self::META_TIME => microtime(),
 		];
@@ -193,7 +190,6 @@ final class RedisStorage implements Storage, BulkReader
 	 */
 	public function unlock(string $key): void
 	{
-		Debugger::log('unlock:' . $key, 'redis_storage');
 		$this->lock->release($this->formatEntryKey($key) . ':lock');
 	}
 
