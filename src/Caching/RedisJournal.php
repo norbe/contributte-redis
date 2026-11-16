@@ -4,6 +4,7 @@ namespace Contributte\Redis\Caching;
 
 use Nette\Caching\Cache;
 use Nette\Caching\Storages\Journal;
+use Predis\Client;
 use Predis\ClientInterface;
 
 /**
@@ -17,6 +18,8 @@ final class RedisJournal implements Journal
 	public const KEY_PRIORITY = 'priority';
 	public const SUFFIX_TAGS = 'tags';
 	public const SUFFIX_KEYS = 'keys';
+
+	private const CLEAN_CHUNK_SIZE = 1000;
 
 	/** @var ClientInterface $client */
 	private $client;
@@ -94,20 +97,82 @@ final class RedisJournal implements Journal
 
 		$entries = [];
 		if (isset($conditions[Cache::Tags])) {
-			foreach ((array) $conditions[Cache::Tags] as $tag) {
-				$this->cleanEntry($found = $this->tagEntries((string) $tag));
-				$entries[] = $found;
-			}
-
-			$entries = array_merge(...$entries);
+			$entries = $this->tagsEntries(array_map('strval', (array) $conditions[Cache::Tags]));
 		}
 
 		if (isset($conditions[Cache::Priority])) {
-			$this->cleanEntry($found = $this->priorityEntries($conditions[Cache::Priority]));
-			$entries = array_merge($entries, $found);
+			$entries = array_merge($entries, $this->priorityEntries($conditions[Cache::Priority]));
 		}
 
-		return array_unique($entries);
+		$entries = array_values(array_unique($entries));
+		$this->cleanEntries($entries);
+
+		return $entries;
+	}
+
+	/**
+	 * Removes many entries from the journal in a few round trips. Cleaning them one by one costs
+	 * several commands per entry, which takes tens of seconds once the cleaned tags hold tens of thousands of entries.
+	 *
+	 * @param mixed[] $keys
+	 */
+	private function cleanEntries(array $keys): void
+	{
+		if (!$this->client instanceof Client) {
+			$this->cleanEntry($keys);
+
+			return;
+		}
+
+		foreach (array_chunk($keys, self::CLEAN_CHUNK_SIZE) as $chunk) {
+			$chunk = array_map('strval', $chunk);
+			$tagsOfEntries = $this->client->pipeline(function ($pipeline) use ($chunk): void {
+				foreach ($chunk as $key) {
+					$pipeline->smembers($this->formatKey($key, self::SUFFIX_TAGS));
+				}
+			});
+
+			$entriesByTag = [];
+			foreach ($chunk as $index => $key) {
+				foreach ((array) $tagsOfEntries[$index] as $tag) {
+					$entriesByTag[$tag][] = $key;
+				}
+			}
+
+			$this->client->pipeline(['atomic' => true], function ($pipeline) use ($chunk, $entriesByTag): void {
+				foreach ($entriesByTag as $tag => $entries) {
+					$pipeline->srem($this->formatKey((string) $tag, self::SUFFIX_KEYS), $entries);
+				}
+
+				$pipeline->del(array_map(fn (string $key): string => $this->formatKey($key, self::SUFFIX_TAGS), $chunk));
+				$pipeline->zrem($this->formatKey(self::KEY_PRIORITY), $chunk);
+			});
+		}
+	}
+
+	/**
+	 * @param string[] $tags
+	 * @return mixed[]
+	 */
+	private function tagsEntries(array $tags): array
+	{
+		if (!$this->client instanceof Client) {
+			return array_merge([], ...array_map(fn (string $tag): array => $this->tagEntries($tag), $tags));
+		}
+
+		$entries = [];
+		foreach (array_chunk($tags, self::CLEAN_CHUNK_SIZE) as $chunk) {
+			$found = $this->client->pipeline(function ($pipeline) use ($chunk): void {
+				foreach ($chunk as $tag) {
+					$pipeline->smembers($this->formatKey($tag, self::SUFFIX_KEYS));
+				}
+			});
+			foreach ($found as $tagEntries) {
+				$entries[] = (array) $tagEntries;
+			}
+		}
+
+		return array_merge([], ...$entries);
 	}
 
 	/**
