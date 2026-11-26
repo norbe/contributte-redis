@@ -36,19 +36,46 @@ final class RedisJournal implements Journal
 	 */
 	public function write(string $key, array $dependencies): void
 	{
-		$this->cleanEntry($key);
+		$this->writeWithEntry($key, $dependencies, static function (): void {
+		});
+	}
+
+	/**
+	 * Writes entry information into the journal in the same transaction as the entry itself.
+	 * Written apart, a clean of its tags could run between them: it would drop the journal of the entry
+	 * before the entry is stored, and the entry would then stay in the cache with no tag able to clean it.
+	 *
+	 * @param array{tags: string[], priority: int} $dependencies
+	 * @param callable(ClientInterface): void $writeEntry queues the write of the entry itself
+	 */
+	public function writeWithEntry(string $key, array $dependencies, callable $writeEntry): void
+	{
+		$previousTags = $this->entryTags($key);
 
 		$this->client->multi();
 
-		// add entry to each tag & tag to entry
+		foreach ($previousTags as $tag) {
+			$this->client->srem($this->formatKey((string) $tag, self::SUFFIX_KEYS), $key);
+		}
+		$this->client->del($this->formatKey($key, self::SUFFIX_TAGS));
+		$this->client->zrem($this->formatKey(self::KEY_PRIORITY), $key);
+
 		$tags = !isset($dependencies[Cache::Tags]) ? [] : (array) $dependencies[Cache::Tags];
 		foreach (array_unique($tags) as $tag) {
-			$this->client->sadd($this->formatKey($tag, self::SUFFIX_KEYS), [$key]);
-			$this->client->sadd($this->formatKey($key, self::SUFFIX_TAGS), [$tag]);
+			$this->client->sadd($this->formatKey((string) $tag, self::SUFFIX_KEYS), [$key]);
+			$this->client->sadd($this->formatKey($key, self::SUFFIX_TAGS), [(string) $tag]);
 		}
 
 		if (isset($dependencies[Cache::Priority])) {
 			$this->client->zadd($this->formatKey(self::KEY_PRIORITY), [$key => (int) $dependencies[Cache::Priority]]);
+		}
+
+		try {
+			$writeEntry($this->client);
+		} catch (\Throwable $e) {
+			$this->client->discard();
+
+			throw $e;
 		}
 
 		$this->client->exec();

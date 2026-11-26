@@ -156,24 +156,33 @@ final class RedisStorage implements Storage, BulkReader
 		}
 
 		$cacheKey = $this->formatEntryKey($key);
+		$journaled = isset($dependencies[Cache::Tags]) || isset($dependencies[Cache::Priority]);
 
-		if (isset($dependencies[Cache::Tags]) || isset($dependencies[Cache::Priority])) {
-			if ($this->journal === null) {
-				throw new InvalidStateException('CacheJournal has not been provided.');
-			}
-
-			$this->journal->write($cacheKey, $dependencies);
+		if ($journaled && $this->journal === null) {
+			throw new InvalidStateException('CacheJournal has not been provided.');
 		}
 
 		$data = $this->serializer->serialize($data, $meta);
 		$store = json_encode($meta) . self::NS_SEPARATOR . $data;
-
-		try {
+		$writeEntry = function (ClientInterface $client) use ($cacheKey, $store, $dependencies): void {
 			if (isset($dependencies[Cache::Expire])) {
-				$this->client->setex($cacheKey, (int) $dependencies[Cache::Expire], $store);
+				$client->setex($cacheKey, (int) $dependencies[Cache::Expire], $store);
 
 			} else {
-				$this->client->set($cacheKey, $store);
+				$client->set($cacheKey, $store);
+			}
+		};
+
+		try {
+			if ($journaled && $this->journal instanceof RedisJournal) {
+				$this->journal->writeWithEntry($cacheKey, $dependencies, $writeEntry);
+
+			} else {
+				if ($journaled) {
+					$this->journal->write($cacheKey, $dependencies);
+				}
+
+				$writeEntry($this->client);
 			}
 
 			$this->unlock($key);
